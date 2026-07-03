@@ -70,8 +70,45 @@ Future<void> showAddSheet(
   });
 }
 
+/// Opens the same form as [showAddSheet], pre-filled for editing an existing
+/// regimen item.
+Future<void> showEditRegimenItemSheet(
+  BuildContext context, {
+  required RegimenItem item,
+  required VoidCallback onSaved,
+}) {
+  return showModalBottomSheet(
+    context: context,
+    isScrollControlled: true,
+    backgroundColor: Colors.transparent,
+    builder: (context) => _AddSheetContent(editItem: item),
+  ).then((saved) {
+    if (saved == true) onSaved();
+  });
+}
+
+/// Opens the same form as [showAddSheet], pre-filled for editing an existing
+/// appointment.
+Future<void> showEditAppointmentSheet(
+  BuildContext context, {
+  required Appointment appt,
+  required VoidCallback onSaved,
+}) {
+  return showModalBottomSheet(
+    context: context,
+    isScrollControlled: true,
+    backgroundColor: Colors.transparent,
+    builder: (context) => _AddSheetContent(editAppointment: appt),
+  ).then((saved) {
+    if (saved == true) onSaved();
+  });
+}
+
 class _AddSheetContent extends StatefulWidget {
-  const _AddSheetContent();
+  final RegimenItem? editItem;
+  final Appointment? editAppointment;
+
+  const _AddSheetContent({this.editItem, this.editAppointment});
 
   @override
   State<_AddSheetContent> createState() => _AddSheetContentState();
@@ -103,6 +140,38 @@ class _AddSheetContentState extends State<_AddSheetContent> {
   final _regimenRepo = RegimenRepository();
   final _apptRepo = AppointmentRepository();
 
+  bool get _isEditing => widget.editItem != null || widget.editAppointment != null;
+
+  @override
+  void initState() {
+    super.initState();
+    final item = widget.editItem;
+    final appt = widget.editAppointment;
+    if (item != null) {
+      _kind = _Kind.item;
+      _modality = item.modality;
+      _nameController.text = item.name;
+      _doseNoteController.text = item.doseNote ?? '';
+      if (item.fixedTimes.isNotEmpty) _time = item.fixedTimes.first;
+      _trackSupply = item.tracksSupply;
+      if (item.supplyOnHand != null) _supplyOnHandController.text = _formatNum(item.supplyOnHand!);
+      if (item.supplyPerDose != null) _supplyPerDoseController.text = _formatNum(item.supplyPerDose!);
+      _supplyUnitController.text = item.supplyUnit ?? 'doses';
+      if (item.supplyReorderThreshold != null) {
+        _supplyThresholdController.text = _formatNum(item.supplyReorderThreshold!);
+      }
+    } else if (appt != null) {
+      _kind = _Kind.appt;
+      _apptType = appt.type;
+      _nameController.text = appt.title;
+      _locationController.text = appt.location ?? '';
+      _apptDate = appt.startTime;
+      _apptTime = TimeOfDay(hour: appt.startTime.hour, minute: appt.startTime.minute);
+    }
+  }
+
+  static String _formatNum(double v) => v == v.roundToDouble() ? v.toInt().toString() : v.toString();
+
   @override
   void dispose() {
     _nameController.dispose();
@@ -124,20 +193,25 @@ class _AddSheetContentState extends State<_AddSheetContent> {
     setState(() => _saving = true);
     try {
       if (_kind == _Kind.item) {
+        final existing = widget.editItem;
         final item = RegimenItem(
+          id: existing?.id,
           userId: userId,
           name: _nameController.text.trim(),
           modality: _modality,
           doseNote: _doseNoteController.text.trim().isEmpty ? null : _doseNoteController.text.trim(),
           fixedTimes: [_time],
           reminderStyle: defaultReminderStyleFor(_modality),
+          active: existing?.active ?? true,
           supplyOnHand: _trackSupply ? double.tryParse(_supplyOnHandController.text) : null,
           supplyPerDose: _trackSupply ? double.tryParse(_supplyPerDoseController.text) : null,
           supplyUnit: _trackSupply ? _supplyUnitController.text.trim() : null,
           supplyReorderThreshold: _trackSupply ? double.tryParse(_supplyThresholdController.text) : null,
         );
-        final created = await _regimenRepo.create(item);
-        await NotificationService.instance.scheduleForRegimenItem(created);
+        final saved = existing == null
+            ? await _regimenRepo.create(item)
+            : await _regimenRepo.update(existing.id!, item.toInsertMap());
+        await NotificationService.instance.scheduleForRegimenItem(saved);
       } else {
         final start = DateTime(
           _apptDate.year,
@@ -146,7 +220,9 @@ class _AddSheetContentState extends State<_AddSheetContent> {
           _apptTime.hour,
           _apptTime.minute,
         );
+        final existing = widget.editAppointment;
         final appt = Appointment(
+          id: existing?.id,
           userId: userId,
           title: _nameController.text.trim(),
           type: _apptType,
@@ -154,8 +230,10 @@ class _AddSheetContentState extends State<_AddSheetContent> {
           startTime: start,
           reminderLeadMinutes: defaultLeadMinutesFor(_apptType),
         );
-        final created = await _apptRepo.create(appt);
-        await NotificationService.instance.scheduleForAppointment(created);
+        final saved = existing == null
+            ? await _apptRepo.create(appt)
+            : await _apptRepo.update(existing.id!, appt.toInsertMap());
+        await NotificationService.instance.scheduleForAppointment(saved);
       }
       if (!mounted) return;
       setState(() {
@@ -174,7 +252,7 @@ class _AddSheetContentState extends State<_AddSheetContent> {
   @override
   Widget build(BuildContext context) {
     if (_saved) {
-      return _SavedConfirmation(kind: _kind);
+      return _SavedConfirmation(kind: _kind, isEditing: _isEditing);
     }
 
     return Padding(
@@ -194,7 +272,10 @@ class _AddSheetContentState extends State<_AddSheetContent> {
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Text('Add new', style: AppFonts.header(size: 18)),
+                  Text(
+                    _isEditing ? (_kind == _Kind.item ? 'Edit item' : 'Edit appointment') : 'Add new',
+                    style: AppFonts.header(size: 18),
+                  ),
                   IconButton(
                     onPressed: () => Navigator.of(context).pop(false),
                     icon: const Icon(Icons.close, size: 16, color: AppColors.textMuted),
@@ -203,8 +284,10 @@ class _AddSheetContentState extends State<_AddSheetContent> {
                 ],
               ),
               const SizedBox(height: 16),
-              _KindToggle(kind: _kind, onChanged: (k) => setState(() => _kind = k)),
-              const SizedBox(height: 20),
+              if (!_isEditing) ...[
+                _KindToggle(kind: _kind, onChanged: (k) => setState(() => _kind = k)),
+                const SizedBox(height: 20),
+              ],
               if (_kind == _Kind.item) _buildItemForm() else _buildApptForm(),
               const SizedBox(height: 24),
               SizedBox(
@@ -368,10 +451,11 @@ class _AddSheetContentState extends State<_AddSheetContent> {
                   _DatePickerField(
                     date: _apptDate,
                     onTap: () async {
+                      final earliest = DateTime.now().subtract(const Duration(days: 1));
                       final picked = await showDatePicker(
                         context: context,
                         initialDate: _apptDate,
-                        firstDate: DateTime.now().subtract(const Duration(days: 1)),
+                        firstDate: _apptDate.isBefore(earliest) ? _apptDate : earliest,
                         lastDate: DateTime.now().add(const Duration(days: 730)),
                       );
                       if (picked != null) setState(() => _apptDate = picked);
@@ -629,8 +713,9 @@ class _SupplyToggle extends StatelessWidget {
 
 class _SavedConfirmation extends StatelessWidget {
   final _Kind kind;
+  final bool isEditing;
 
-  const _SavedConfirmation({required this.kind});
+  const _SavedConfirmation({required this.kind, required this.isEditing});
 
   @override
   Widget build(BuildContext context) {
@@ -651,7 +736,9 @@ class _SavedConfirmation extends StatelessWidget {
           ),
           const SizedBox(height: 12),
           Text(
-            'Added to your ${kind == _Kind.item ? 'regimen' : 'appointments'}.',
+            isEditing
+                ? 'Changes saved.'
+                : 'Added to your ${kind == _Kind.item ? 'regimen' : 'appointments'}.',
             style: AppFonts.body(size: 15),
           ),
           const SizedBox(height: 16),
